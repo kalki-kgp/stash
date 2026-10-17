@@ -59,8 +59,10 @@ struct Content {
 /// images live as content-addressed HEIC files next to the database.
 final class Store {
     static let directory: URL = {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Stash", isDirectory: true)
+        // STASH_HOME points tests at a scratch directory instead of the real history.
+        let url = ProcessInfo.processInfo.environment["STASH_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Stash", isDirectory: true)
         for sub in ["", "images", "thumbs"] {
             try? FileManager.default.createDirectory(at: url.appendingPathComponent(sub), withIntermediateDirectories: true)
         }
@@ -77,7 +79,10 @@ final class Store {
     init() {
         let path = Self.directory.appendingPathComponent("history.sqlite").path
         sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nil)
-        exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-2000;")
+        // The import child writes to the same file; wait for its lock instead of failing.
+        sqlite3_busy_timeout(db, 5000)
+        exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-2000; PRAGMA user_version=1;")
+        sqlite3_create_function_v2(db, "fuzzy", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nil, fuzzyFunction, nil, nil, nil)
         exec("""
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY,
@@ -99,10 +104,10 @@ final class Store {
         CREATE INDEX IF NOT EXISTS items_order ON items (pinned DESC, last_at DESC);
         CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(text, content='items', content_rowid='id', tokenize='trigram');
         CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
-            INSERT INTO items_fts(rowid, text) VALUES (new.id, coalesce(new.text, new.files, ''));
+            INSERT INTO items_fts(rowid, text) VALUES (new.id, substr(coalesce(new.text, new.files, ''), 1, 200000));
         END;
         CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
-            INSERT INTO items_fts(items_fts, rowid, text) VALUES ('delete', old.id, coalesce(old.text, old.files, ''));
+            INSERT INTO items_fts(items_fts, rowid, text) VALUES ('delete', old.id, substr(coalesce(old.text, old.files, ''), 1, 200000));
         END;
         """)
     }
@@ -190,14 +195,15 @@ final class Store {
         if let image { removeImageIfUnused(image) }
     }
 
-    /// Deletes everything that isn't pinned.
-    func clearUnpinned() {
+    /// Deletes everything that isn't pinned, or everything at all.
+    func clear(includingPinned: Bool = false) {
+        let filter = includingPinned ? "1" : "pinned = 0"
         let images: [String] = queue.sync {
-            let find = prepare("SELECT image FROM items WHERE pinned = 0 AND image IS NOT NULL")
+            let find = prepare("SELECT image FROM items WHERE \(filter) AND image IS NOT NULL")
             defer { sqlite3_finalize(find) }
             var images: [String] = []
             while sqlite3_step(find) == SQLITE_ROW { if let h = column(find, 0) { images.append(h) } }
-            exec("DELETE FROM items WHERE pinned = 0")
+            exec("DELETE FROM items WHERE \(filter)")
             return images
         }
         images.forEach(removeImageIfUnused)
@@ -218,50 +224,83 @@ final class Store {
 
     // MARK: Reads
 
-    /// One page of rows, pinned first then newest. A query searches the full text, not just the preview.
-    func rows(matching query: String, limit: Int) -> [Row] {
+    private static let columns = "i.id, i.kind, i.preview, i.image, i.width, i.height, i.app, i.last_at, i.pinned"
+
+    /// One page of rows, pinned first then newest. A query searches the full text, not just the preview:
+    /// exact substring matches come first, then fuzzy ones (letters in order, close together) by score.
+    func rows(matching query: String, limit: Int, fuzzy: Bool = true) -> [Row] {
         queue.sync {
             let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let columns = "i.id, i.kind, i.preview, i.image, i.width, i.height, i.app, i.last_at, i.pinned"
-            let stmt: OpaquePointer?
             if q.isEmpty {
-                stmt = prepare("SELECT \(columns) FROM items i ORDER BY i.pinned DESC, i.last_at DESC LIMIT ?")
+                let stmt = prepare("SELECT \(Self.columns) FROM items i ORDER BY i.pinned DESC, i.last_at DESC LIMIT ?")
+                defer { sqlite3_finalize(stmt) }
                 sqlite3_bind_int(stmt, 1, Int32(limit))
-            } else if q.count >= 3 {
+                return readRows(stmt)
+            }
+            var rows: [Row]
+            if q.count >= 3 {
                 // The trigram index answers substring matches; quoting keeps the query literal.
-                stmt = prepare("""
-                    SELECT \(columns) FROM items_fts f JOIN items i ON i.id = f.rowid
+                let stmt = prepare("""
+                    SELECT \(Self.columns) FROM items_fts f JOIN items i ON i.id = f.rowid
                     WHERE items_fts MATCH ? ORDER BY i.pinned DESC, i.last_at DESC LIMIT ?
                     """)
+                defer { sqlite3_finalize(stmt) }
                 bind(stmt, 1, "\"" + q.replacingOccurrences(of: "\"", with: "\"\"") + "\"")
                 sqlite3_bind_int(stmt, 2, Int32(limit))
+                rows = readRows(stmt)
             } else {
                 // Trigrams need three characters; one or two fall back to a scan.
-                stmt = prepare("""
-                    SELECT \(columns) FROM items i WHERE coalesce(i.text, i.files) LIKE ? ESCAPE '\\'
+                let stmt = prepare("""
+                    SELECT \(Self.columns) FROM items i WHERE coalesce(i.text, i.files) LIKE ? ESCAPE '\\'
                     ORDER BY i.pinned DESC, i.last_at DESC LIMIT ?
                     """)
+                defer { sqlite3_finalize(stmt) }
                 let escaped = q.replacingOccurrences(of: "\\", with: "\\\\")
                     .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
                 bind(stmt, 1, "%\(escaped)%")
                 sqlite3_bind_int(stmt, 2, Int32(limit))
+                rows = readRows(stmt)
             }
+            guard fuzzy, q.count >= 2, rows.count < limit else { return rows }
+            let found = Set(rows.map(\.id))
+            let stmt = prepare("""
+                SELECT \(Self.columns), fuzzy(substr(coalesce(i.text, i.files, ''), 1, 4000), ?) AS score FROM items i
+                WHERE score > 0 ORDER BY i.pinned DESC, score DESC, i.last_at DESC LIMIT ?
+                """)
             defer { sqlite3_finalize(stmt) }
-            var rows: [Row] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                let hasSize = sqlite3_column_type(stmt, 4) != SQLITE_NULL
-                rows.append(Row(
-                    id: sqlite3_column_int64(stmt, 0),
-                    kind: ItemKind(rawValue: Int(sqlite3_column_int(stmt, 1))) ?? .text,
-                    preview: column(stmt, 2) ?? "",
-                    imageHash: column(stmt, 3),
-                    imageSize: hasSize ? CGSize(width: Int(sqlite3_column_int(stmt, 4)), height: Int(sqlite3_column_int(stmt, 5))) : nil,
-                    app: column(stmt, 6),
-                    lastAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 7)),
-                    pinned: sqlite3_column_int(stmt, 8) != 0
-                ))
-            }
-            return rows
+            bind(stmt, 1, q.lowercased())
+            sqlite3_bind_int(stmt, 2, Int32(limit))
+            rows += readRows(stmt).filter { !found.contains($0.id) }
+            return Array(rows.prefix(limit))
+        }
+    }
+
+    private func readRows(_ stmt: OpaquePointer?) -> [Row] {
+        var rows: [Row] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let hasSize = sqlite3_column_type(stmt, 4) != SQLITE_NULL
+            rows.append(Row(
+                id: sqlite3_column_int64(stmt, 0),
+                kind: ItemKind(rawValue: Int(sqlite3_column_int(stmt, 1))) ?? .text,
+                preview: column(stmt, 2) ?? "",
+                imageHash: column(stmt, 3),
+                imageSize: hasSize ? CGSize(width: Int(sqlite3_column_int(stmt, 4)), height: Int(sqlite3_column_int(stmt, 5))) : nil,
+                app: column(stmt, 6),
+                lastAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 7)),
+                pinned: sqlite3_column_int(stmt, 8) != 0
+            ))
+        }
+        return rows
+    }
+
+    /// The start of an item's text, for the hover tooltip.
+    func fullText(_ id: Int64, limit: Int = 2000) -> String? {
+        queue.sync {
+            let stmt = prepare("SELECT substr(coalesce(text, files), 1, ?) FROM items WHERE id = ?")
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(limit))
+            sqlite3_bind_int64(stmt, 2, id)
+            return sqlite3_step(stmt) == SQLITE_ROW ? column(stmt, 0) : nil
         }
     }
 
@@ -288,12 +327,6 @@ final class Store {
             defer { sqlite3_finalize(stmt) }
             return sqlite3_step(stmt) != SQLITE_ROW
         }
-    }
-
-    func transaction(_ body: () -> Void) {
-        queue.sync { exec("BEGIN") }
-        body()
-        queue.sync { exec("COMMIT") }
     }
 
     // MARK: Helpers
@@ -344,4 +377,40 @@ final class Store {
         guard let bytes = sqlite3_column_blob(stmt, index) else { return nil }
         return Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, index)))
     }
+}
+
+/// `fuzzy(text, query)`: 0 when the query's letters don't appear in order within a short span of the
+/// text, otherwise higher the tighter they sit. ASCII is compared case-insensitively; the query
+/// arrives lowercased.
+private func fuzzyFunction(_ context: OpaquePointer?, _ count: Int32, _ args: UnsafeMutablePointer<OpaquePointer?>?) {
+    guard let args, let textPtr = sqlite3_value_text(args[0]), let queryPtr = sqlite3_value_text(args[1]) else {
+        sqlite3_result_double(context, 0); return
+    }
+    let text = UnsafeBufferPointer(start: textPtr, count: Int(sqlite3_value_bytes(args[0])))
+    let query = UnsafeBufferPointer(start: queryPtr, count: Int(sqlite3_value_bytes(args[1])))
+    sqlite3_result_double(context, fuzzyScore(text, query))
+}
+
+func fuzzyScore(_ text: UnsafeBufferPointer<UInt8>, _ query: UnsafeBufferPointer<UInt8>) -> Double {
+    guard !query.isEmpty, text.count >= query.count else { return 0 }
+    @inline(__always) func lower(_ c: UInt8) -> UInt8 { c >= 65 && c <= 90 ? c + 32 : c }
+    let maxSpan = max(query.count * 3, query.count + 8)
+    var best = Int.max
+    let first = query[0]
+    var start = 0
+    while start <= text.count - query.count {
+        if lower(text[start]) == first {
+            var qi = 1, ti = start + 1
+            while qi < query.count && ti < text.count && ti - start < maxSpan {
+                if lower(text[ti]) == query[qi] { qi += 1 }
+                ti += 1
+            }
+            if qi == query.count {
+                best = min(best, ti - start)
+                if best == query.count { break }
+            }
+        }
+        start += 1
+    }
+    return best == Int.max ? 0 : Double(query.count) / Double(best)
 }

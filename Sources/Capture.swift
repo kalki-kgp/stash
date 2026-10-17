@@ -35,14 +35,20 @@ enum Capture {
         for type in [text, rtf, html] where types.contains(type) {
             data[type] = item.data(forType: NSPasteboard.PasteboardType(type))
         }
-        if data[text] == nil {
-            for type in [png, tiff] where types.contains(type) {
+        if data[text] == nil, let type = [png, tiff].first(where: types.contains) {
+            if readsImages {
                 data[type] = item.data(forType: NSPasteboard.PasteboardType(type))
-                break
+            } else {
+                // The image stays on the pasteboard; a child process reads and stores it.
+                data[imageOnPasteboard] = Data(String(pasteboard.changeCount).utf8)
             }
         }
         return data.isEmpty ? nil : data
     }
+
+    /// False in the app: image bytes are read by `ImageWorker` in a child process instead.
+    static var readsImages = true
+    static let imageOnPasteboard = "dev.kalki.stash.image-on-pasteboard"
 
     /// Builds the item; image work (decode, hash, HEIC encode) happens here, so call it off the main thread.
     static func item(from data: [String: Data], app: String?) -> NewItem? {
@@ -55,7 +61,8 @@ enum Capture {
            !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return NewItem(kind: .text, text: string, rtf: data[rtf], html: data[html], app: app)
         }
-        if let image = data[png] ?? data[tiff], let stored = storeImage(image) {
+        let pending = data[imageOnPasteboard].flatMap { Int(String(decoding: $0, as: UTF8.self)) }
+        if let stored = pending.flatMap(ImageWorker.captureFromPasteboard) ?? (data[png] ?? data[tiff]).flatMap(storeImage) {
             return NewItem(kind: .image, text: nil, rtf: nil, html: nil,
                            imageHash: stored.hash, imageSize: stored.size, app: app)
         }
@@ -82,7 +89,7 @@ enum Capture {
         if !FileManager.default.fileExists(atPath: thumb.path) {
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 240,
+                kCGImageSourceThumbnailMaxPixelSize: 120,
                 kCGImageSourceCreateThumbnailWithTransform: true,
             ]
             if let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
@@ -122,17 +129,78 @@ final class Watcher {
     /// Called after Stash itself writes the pasteboard, so its own copy isn't recorded again.
     func skipCurrent() { lastChange = NSPasteboard.general.changeCount }
 
+    /// While paused, copies are seen but not saved.
+    var isPaused = false
+    /// Drops the next copy only (Maccy's ⌥⇧-click on the menu bar icon).
+    var ignoreNext = false
+
     private func poll() {
         let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount != lastChange else { return }
         lastChange = pasteboard.changeCount
-        guard let data = Capture.read(pasteboard) else { return }
+        if ignoreNext { ignoreNext = false; return }
+        guard !isPaused, let data = Capture.read(pasteboard) else { return }
         let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         work.async { [store, onChange] in
             let saved = autoreleasepool { Capture.item(from: data, app: app).map(store.save) ?? false }
             // Decoding a big screenshot grows the heap by its raw size; give those pages back now.
             if data[Capture.png] != nil || data[Capture.tiff] != nil { malloc_zone_pressure_relief(nil, 0) }
             if saved { DispatchQueue.main.async(execute: onChange) }
+        }
+    }
+}
+
+/// Image work and the Maccy import run in short-lived copies of Stash. Decoding a 27 MB screenshot
+/// leaves the allocator holding that much freed-but-dirty memory for the life of the process; in a
+/// child it all goes back to the system when the child exits, and an image that crashes ImageIO
+/// takes down only the child.
+enum ImageWorker {
+    static let captureFlag = "--capture-image"
+    static let importFlag = "--import-maccy"
+
+    /// Stores the image on the general pasteboard, provided it's still the copy with this change count.
+    static func captureFromPasteboard(changeCount: Int) -> (hash: String, size: CGSize)? {
+        guard let output = runChild([captureFlag, String(changeCount)]) else { return nil }
+        let parts = output.split(whereSeparator: \.isWhitespace)
+        guard parts.count == 3, let width = Double(parts[1]), let height = Double(parts[2]) else { return nil }
+        return (String(parts[0]), CGSize(width: width, height: height))
+    }
+
+    /// Runs the whole Maccy import in a child and waits for it.
+    static func importMaccy() { _ = runChild([importFlag]) }
+
+    private static func runChild(_ arguments: [String]) -> String? {
+        guard let executable = Bundle.main.executableURL else { return nil }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let output = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? String(decoding: output, as: UTF8.self) : nil
+    }
+
+    /// The child's side, checked first thing in `main`.
+    static func runIfRequested() {
+        let args = CommandLine.arguments
+        guard args.count >= 2 else { return }
+        switch args[1] {
+        case captureFlag:
+            let pasteboard = NSPasteboard.general
+            guard args.count == 3, Int(args[2]) == pasteboard.changeCount,
+                  let item = pasteboard.pasteboardItems?.first,
+                  let data = item.data(forType: .png) ?? item.data(forType: .tiff),
+                  let stored = Capture.storeImage(data) else { exit(1) }
+            print("\(stored.hash) \(Int(stored.size.width)) \(Int(stored.size.height))")
+            exit(0)
+        case importFlag:
+            _ = MaccyImport.run(into: Store())
+            exit(0)
+        default:
+            return
         }
     }
 }

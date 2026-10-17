@@ -4,8 +4,7 @@ import SQLite3
 
 /// Puts a stored item back on the clipboard in the forms other apps expect.
 enum Paste {
-    static func write(_ content: Content) {
-        let pasteboard = NSPasteboard.general
+    static func write(_ content: Content, to pasteboard: NSPasteboard = .general) {
         pasteboard.clearContents()
         switch content.kind {
         case .text:
@@ -25,14 +24,27 @@ enum Paste {
             ImageProvider.current = provider
             item.setDataProvider(provider, forTypes: [.png, .tiff])
             pasteboard.writeObjects([item])
+            provider.changeCount = pasteboard.changeCount
         }
     }
 }
 
-private final class ImageProvider: NSObject, NSPasteboardItemDataProvider {
+final class ImageProvider: NSObject, NSPasteboardItemDataProvider {
     /// Held here because the pasteboard only keeps a weak reference to its provider.
     static var current: ImageProvider?
     let url: URL
+    var changeCount = 0
+
+    /// If Stash's image is still what's on the clipboard, replace the promise with the PNG itself.
+    static func resolveBeforeQuit() {
+        let pasteboard = NSPasteboard.general
+        guard let current, pasteboard.changeCount == current.changeCount,
+              let source = CGImageSourceCreateWithURL(current.url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+        pasteboard.clearContents()
+        pasteboard.setData(png, forType: .png)
+    }
 
     init(url: URL) { self.url = url }
 
@@ -47,7 +59,7 @@ private final class ImageProvider: NSObject, NSPasteboardItemDataProvider {
 
 /// One-time copy of Maccy's history (read-only; Maccy's files are never written).
 enum MaccyImport {
-    static let path = FileManager.default.homeDirectoryForCurrentUser
+    static let path = ProcessInfo.processInfo.environment["STASH_MACCY_DB"] ?? FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Containers/org.p0deje.Maccy/Data/Library/Application Support/Maccy/Storage.sqlite").path
 
     /// Core Data stores dates as seconds since 2001-01-01.
@@ -70,7 +82,7 @@ enum MaccyImport {
 
         let wanted = [Capture.text, Capture.fileURL, Capture.rtf, Capture.html, Capture.png, Capture.tiff]
         var imported = 0
-        store.transaction {
+        do {
             while sqlite3_step(items) == SQLITE_ROW {
                 sqlite3_reset(contents)
                 sqlite3_bind_int64(contents, 1, sqlite3_column_int64(items, 0))

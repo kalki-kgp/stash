@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The ⌘⇧C panel: search on top, history below. Keys: ↑↓ move, ↩ copy, ⌘1–9 copy that row,
-/// ⌘P pin, ⌘⌫ delete, esc close.
+/// The ⌘⇧C panel: search on top, history below. Keys are Maccy's and are handled in
+/// `History.handle`, before the search field sees them.
 struct PanelView: View {
     @ObservedObject var history: History
     @FocusState private var searchFocused: Bool
@@ -27,29 +27,10 @@ struct PanelView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .focused($searchFocused)
-                .onSubmit { history.pickSelected() }
-                .onKeyPress(.upArrow) { history.moveSelection(-1); return .handled }
-                .onKeyPress(.downArrow) { history.moveSelection(1); return .handled }
-                .onKeyPress(phases: .down) { press in shortcut(press) }
         }
         .padding(.horizontal, 14)
         .frame(height: 38)
         .glassEffect(.regular, in: Capsule(style: .continuous))
-    }
-
-    private func shortcut(_ press: KeyPress) -> KeyPress.Result {
-        guard press.modifiers == .command else { return .ignored }
-        let selected = history.rows.first { $0.id == history.selection }
-        switch press.key {
-        case "p":
-            if let selected { history.togglePin(selected) }
-        case .delete:
-            if let selected { history.delete(selected) }
-        default:
-            guard let n = Int(String(press.characters)), (1...9).contains(n), n <= history.rows.count else { return .ignored }
-            history.pick(history.rows[n - 1])
-        }
-        return .handled
     }
 
     @ViewBuilder
@@ -58,8 +39,7 @@ struct PanelView: View {
             Text(verbatim: history.query.isEmpty ? "Copy something and it shows up here." : "No matches")
                 .font(.system(size: 12.5))
                 .foregroundStyle(Chrome.secondaryText)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 30)
+                .frame(maxWidth: .infinity, minHeight: 440)
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -107,6 +87,7 @@ private struct RowView: View {
     let row: Row
     let index: Int
     let isSelected: Bool
+    @State private var tooltip: String?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -139,9 +120,19 @@ private struct RowView: View {
                 .fill(isSelected ? Chrome.overlay(0.11) : Color.clear)
         }
         .contentShape(.rect)
-        .onTapGesture { history.pick(row) }
-        .onHover { if $0 { history.selection = row.id } }
+        .onTapGesture { history.pick(row, History.mode(for: NSEvent.modifierFlags)) }
+        .onContinuousHover { phase in
+            guard case .active = phase, history.hoverArmed, history.selection != row.id else { return }
+            history.selection = row.id
+        }
+        .help(tooltip ?? "")
+        .onHover { inside in
+            // Load the full text only for the row under the pointer, for the tooltip.
+            if inside, tooltip == nil, row.kind != .image { tooltip = history.store.fullText(row.id) }
+        }
         .contextMenu {
+            Button("Copy") { history.pick(row) }
+            Button("Paste") { history.pick(row, .paste) }
             Button(row.pinned ? "Unpin" : "Pin") { history.togglePin(row) }
             Button("Delete", role: .destructive) { history.delete(row) }
         }
