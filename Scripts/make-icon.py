@@ -2,7 +2,7 @@
 """Turns the logo artwork (an icon tile on a black backdrop) into Assets/AppIcon.icns.
 
 Finds the tile by brightness, places it on Apple's 1024 px icon grid (824 px tile, 100 px margin),
-and cuts the black backdrop away with an anti-aliased superellipse matching the tile's corners.
+and cuts the black backdrop away along the tile's own outline.
 Usage: Scripts/make-icon.py <artwork.png>
 """
 import os, subprocess, sys, tempfile
@@ -22,19 +22,18 @@ square.paste(tile, ((side - tile.width) // 2, (side - tile.height) // 2))
 TILE, CANVAS, SS = 824, 1024, 4
 tile = square.resize((TILE, TILE), Image.LANCZOS)
 
-# Superellipse mask (n = 5 approximates Apple's continuous-corner squircle), supersampled for AA.
-n, big = 5.0, TILE * SS
-mask = Image.new("L", (big, big), 0)
-draw = ImageDraw.Draw(mask)
-r = big / 2
-for y in range(big):
-    dy = abs((y + 0.5 - r) / r)
-    if dy >= 1:
-        continue
-    dx = (1 - dy ** n) ** (1 / n)
-    draw.line([(r - dx * r, y), (r + dx * r - 1, y)], fill=255)
-mask = mask.resize((TILE, TILE), Image.LANCZOS)
-
+# Mask traced from the artwork itself: the tile is lighter than the black backdrop all the way to
+# its rim, so threshold it, fill any interior holes, pull the edge in to drop the dark fringe, and
+# soften one pixel for anti-aliasing.
+# A black border around the crop joins all of the backdrop into one ring the fill can reach.
+PAD = 12
+padded = Image.new("L", (TILE + 2 * PAD, TILE + 2 * PAD), 0)
+padded.paste(tile.convert("L"), (PAD, PAD))
+holes = padded.point(lambda v: 255 if v > 16 else 0)
+ImageDraw.floodfill(holes, (0, 0), 128)                 # backdrop → 128
+mask = holes.point(lambda v: 0 if v == 128 else 255)    # everything else is tile
+mask = mask.filter(ImageFilter.MinFilter(5))            # erode ~2 px
+mask = mask.filter(ImageFilter.GaussianBlur(1.0)).crop((PAD, PAD, PAD + TILE, PAD + TILE))
 icon = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
 off = (CANVAS - TILE) // 2
 rgba = tile.convert("RGBA")
