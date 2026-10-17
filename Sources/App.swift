@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import ServiceManagement
 import SwiftUI
@@ -49,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     /// True while the close animation runs, so reopening mid-fade isn't undone by its completion.
     private var hiding = false
     private var panelSize: NSSize?
+    private let permissions = Permissions()
+    private var onboardingWindow: NSWindow?
     private static let panelMargin: CGFloat = 24
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -60,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         updateStatusIcon()
 
         history.onPick = { [weak self] in self?.hidePanel() }
+        history.needsPastePermission = { [weak self] in self?.showOnboarding() }
         history.skipCapture = { [weak self] in self?.watcher.skipCurrent() }
         buildPanel()
         // Lay the panel out once now, so the first ⌘⇧C doesn't pay for building the view tree.
@@ -68,7 +72,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         panelSize = panelHost.fittingSize
         watcher.start()
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_C), modifiers: UInt32(cmdKey | shiftKey)) { [weak self] in
+            self?.permissions.shortcutWorked = true
             self?.togglePanel(atCursor: true)
+        }
+
+        // First launch, or an update left Accessibility switched on for the old build only.
+        let stalePaste = UserDefaults.standard.bool(forKey: "accessibilityGranted") && !AXIsProcessTrusted()
+        if stalePaste { Permissions.resetAccessibility() }
+        var wantsSetup = !UserDefaults.standard.bool(forKey: "onboarded") || stalePaste
+        #if STASH_TEST
+        wantsSetup = ProcessInfo.processInfo.environment["STASH_ONBOARD"] != nil
+        #endif
+        if wantsSetup {
+            DispatchQueue.main.async { self.showOnboarding() }
         }
 
         // Once per history: the marker lives next to the database, so a fresh history imports again.
@@ -156,6 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let pause = menu.addItem(withTitle: watcher.isPaused ? "Resume Saving Copies" : "Pause Saving Copies",
                                  action: #selector(togglePause), keyEquivalent: "")
         pause.target = self
+        menu.addItem(withTitle: "Set Up Stash…", action: #selector(openOnboarding), keyEquivalent: "").target = self
         let login = menu.addItem(withTitle: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -167,6 +184,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     /// The menu is attached only while it's open, so a left click keeps opening the panel.
     func menuDidClose(_ menu: NSMenu) { statusItem.menu = nil }
+
+    @objc private func openOnboarding() { showOnboarding() }
 
     @objc private func openFromMenu() { DispatchQueue.main.async { self.showPanel(atCursor: false) } }
 
@@ -185,6 +204,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }
+    }
+
+    // MARK: Setup
+
+    func showOnboarding() {
+        hidePanel()
+        permissions.startWatching()
+        if onboardingWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
+                                  styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+            WindowChrome.configure(window)
+            window.isMovableByWindowBackground = true
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.title = "Set Up Stash"
+            let root = OnboardingView(permissions: permissions) { [weak window] in window?.close() }
+                .background(WindowGlass())
+                .buttonBorderShape(.capsule)
+            // Measured with a hosting view that sizes to its content; the window's own one follows the frame.
+            let size = NSHostingView(rootView: root).fittingSize
+            let hosting = WindowHostingView(rootView: AnyView(root))
+            window.setContentSize(size)
+            hosting.frame = NSRect(origin: .zero, size: size)
+            let container = NSView(frame: hosting.frame)
+            container.addSubview(hosting)
+            window.contentView = container
+            window.center()
+            onboardingWindow = window
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+        onboardingWindow?.makeKeyAndOrderFront(nil)
+        if let window = onboardingWindow {
+            WindowChrome.placeTrafficLights(on: window)
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
+            DispatchQueue.main.async { window.invalidateShadow() }
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === onboardingWindow else { return }
+        UserDefaults.standard.set(true, forKey: "onboarded")
+        permissions.stopWatching()
+        NSApp.setActivationPolicy(.accessory)
     }
 
     // MARK: Panel
@@ -257,6 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     /// Clicking anywhere else takes key focus from the panel, which closes it.
     func windowDidResignKey(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === panel else { return }
         hidePanel()
     }
 
@@ -269,7 +334,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         lastOpenMs = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
     }
     var lastOpenMs = 0.0
+    var permissionsForTest: Permissions { permissions }
+    var onboardingVisibleForTest: Bool { onboardingWindow?.isVisible ?? false }
     #endif
 
     var hotKeyRegistered: Bool { hotKey?.isRegistered ?? false }
+}
+
+/// Lets the window frame define the hosting view's size instead of the content hugging it.
+final class WindowHostingView: NSHostingView<AnyView> {
+    required init(rootView: AnyView) {
+        super.init(rootView: rootView)
+        sizingOptions = []
+        safeAreaRegions = []
+        translatesAutoresizingMaskIntoConstraints = true
+        autoresizingMask = [.width, .height]
+    }
+
+    @MainActor required dynamic init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
 }

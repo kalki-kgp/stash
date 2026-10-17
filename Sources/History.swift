@@ -18,6 +18,8 @@ final class History: ObservableObject {
     /// when the panel opens doesn't steal the selection from the first row.
     var hoverArmed = false
     var onPick: (() -> Void)?
+    /// Called instead of pasting when Stash isn't allowed to send keystrokes yet.
+    var needsPastePermission: (() -> Void)?
     var skipCapture: (() -> Void)?
 
     private static let page = 60
@@ -71,7 +73,8 @@ final class History: ObservableObject {
         skipCapture?()
         store.touch(row.id)
         onPick?()
-        if mode != .copy { Self.pasteIntoFrontApp() }
+        guard mode != .copy else { return }
+        if AXIsProcessTrusted() { Self.pasteIntoFrontApp() } else { needsPastePermission?() }
     }
 
     /// The mode a click or ⌘/⌥ number asks for, from the modifiers held at that moment.
@@ -81,11 +84,8 @@ final class History: ObservableObject {
         return flags.contains(.shift) ? .pastePlain : .paste
     }
 
-    /// Sends ⌘V to whatever app is in front. macOS only allows this once Stash has Accessibility access;
-    /// without it, the item is still on the clipboard and the system prompt explains where to allow it.
+    /// Sends ⌘V to whatever app is in front (needs Accessibility access; the item is on the clipboard either way).
     private static func pasteIntoFrontApp() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        guard AXIsProcessTrustedWithOptions(options) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             let source = CGEventSource(stateID: .combinedSessionState)
             for down in [true, false] {

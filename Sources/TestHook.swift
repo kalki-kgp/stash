@@ -35,6 +35,7 @@ enum TestHook {
                     }
                 }
             case "hotkey": app.togglePanelForTest()
+            case "quitmaccy": app.permissionsForTest.quitMaccy()
             case "hover": history.hoverArmed = true
             case "pause": watcher.isPaused = parts[1] == "1"
             case "ignorenext": watcher.ignoreNext = true
@@ -49,6 +50,13 @@ enum TestHook {
                     "selected": selected ?? -1,
                     "hotKey": app.hotKeyRegistered,
                     "openMs": app.lastOpenMs,
+                    "setup": [
+                        "visible": app.onboardingVisibleForTest,
+                        "canPaste": app.permissionsForTest.canPaste,
+                        "clipboardAllowed": app.permissionsForTest.clipboardAllowed,
+                        "maccyRunning": app.permissionsForTest.maccyRunning,
+                        "shortcutWorked": app.permissionsForTest.shortcutWorked,
+                    ],
                 ]
                 if let data = try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]) {
                     try? data.write(to: URL(fileURLWithPath: parts[1]))
