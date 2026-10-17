@@ -10,5 +10,6 @@ swiftc -O $FLAGS -swift-version 5 -parse-as-library -target arm64-apple-macosx26
     -framework SwiftUI -framework AppKit -framework Carbon -lsqlite3 \
     Sources/*.swift -o "$APP/Contents/MacOS/Stash"
 cp Info.plist "$APP/Contents/Info.plist"
+[ -f Assets/AppIcon.icns ] && cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 codesign --force --sign - --identifier dev.kalki.stash "$APP"
 echo "built $PWD/$APP"
