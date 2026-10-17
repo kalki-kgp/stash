@@ -171,9 +171,20 @@ check(files.kind == .file && files.files.count == 2, "multiple Finder files → 
 pb.clearContents(); let both = NSPasteboardItem(); both.setString("caption", forType: .string); both.setData(pngData, forType: .png)
 pb.writeObjects([both])
 let read = Capture.read(pb)!
-check(read[Capture.png] == nil && Capture.item(from: read, app: nil)?.kind == .text, "text + image → text, image not read")
+let captioned = Capture.item(from: read, app: nil)
+check(captioned?.kind == .text && captioned?.imageHash != nil, "text + picture → text row that keeps the picture too")
 pb.clearContents(); pb.setData(pngData, forType: .png)
 check(Capture.item(from: Capture.read(pb)!, app: nil)?.kind == .image, "image-only copy → image")
+// Any copy that carries a file link and a picture (screenshot tools, Finder, chat apps) keeps both.
+let shotFile = Store.directory.appendingPathComponent("Screenshot_test.png")
+try! pngData.write(to: shotFile)
+pb.clearContents()
+let shot = NSPasteboardItem()
+shot.setString(shotFile.absoluteString, forType: .fileURL); shot.setData(pngData, forType: .png); shot.setString(shotFile.path, forType: .string)
+pb.writeObjects([shot])
+let shotItem = Capture.item(from: Capture.read(pb)!, app: nil)
+check(shotItem?.kind == .file && shotItem?.files == [shotFile.absoluteString] && shotItem?.imageHash != nil && shotItem?.text == shotFile.path,
+      "file + picture + text copy keeps all three")
 pb.clearContents(); pb.setData(Data(count: 10), forType: .init("com.apple.webarchive"))
 check(Capture.read(pb) == nil, "web archive alone isn't stored")
 
@@ -187,6 +198,21 @@ Paste.write(Content(kind: .image, text: nil, rtf: nil, html: nil, files: [], ima
 let pasted = pb.data(forType: .png).flatMap { NSBitmapImageRep(data: $0) }
 check(pasted?.pixelsWide == 1600 && pasted?.pixelsHigh == 1000, "image pastes back as PNG at full size")
 check(pb.data(forType: .tiff).flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide == 1600, "and as TIFF")
+if let shotItem {
+    store.save(shotItem)
+    let savedShot = store.rows(matching: "Screenshot_test", limit: 5).first { $0.kind == .file }
+    check(savedShot?.preview == "Screenshot_test.png" && savedShot?.imageHash != nil, "row shows the file name with a thumbnail")
+    if let savedShot {
+        Paste.write(store.content(savedShot.id)!, to: pb)
+        check(pb.data(forType: .png).flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide == 1600, "picks back as a real PNG")
+        check(pb.data(forType: .tiff) != nil, "and TIFF")
+        check(pb.string(forType: .fileURL) == shotFile.absoluteString, "and the file link")
+        check(pb.string(forType: .string) == shotFile.path, "and the text")
+        try? FileManager.default.removeItem(at: shotFile)
+        Paste.write(store.content(savedShot.id)!, to: pb)
+        check(pb.data(forType: .png) != nil, "the picture still pastes after the original file is deleted")
+    }
+}
 Paste.write(Content(kind: .file, text: nil, rtf: nil, html: nil, files: files.files, imageHash: nil), to: pb)
 check((pb.readObjects(forClasses: [NSURL.self]) as? [URL])?.map(\.path) == ["/tmp/a.txt", "/tmp/b c.txt"], "files paste back as file URLs")
 pb.releaseGlobally()
@@ -198,9 +224,12 @@ if FileManager.default.fileExists(atPath: maccy) {
     let before = digest(maccy)
     store.clear(includingPinned: true)
     let t = Date()
-    let n = MaccyImport.run(into: store)
+    let n = MaccyImport.run(into: store) ?? -1
     let first = count()
+    let copiesBefore = store.rows(matching: "", limit: 5).map(\.id).compactMap { store.content($0)?.text }
     _ = MaccyImport.run(into: store)
+    check(store.rows(matching: "", limit: 5).map(\.id).compactMap { store.content($0)?.text } == copiesBefore,
+          "importing into an existing history only fills formats in, order unchanged")
     check(n > 900 && first > 900, "imported \(n) items in \(String(format: "%.1f", Date().timeIntervalSince(t))) s")
     check(count() == first, "re-import adds no duplicates")
     check(digest(maccy) == before, "Maccy's database is byte-for-byte unchanged")

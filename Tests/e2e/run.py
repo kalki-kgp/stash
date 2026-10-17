@@ -46,6 +46,10 @@ def dump():
     raise RuntimeError("no dump")
 
 
+def json_setup():
+    return dump()["setup"]
+
+
 def copy(text):
     subprocess.run(["pbcopy"], input=text.encode(), check=True)
     time.sleep(0.8)  # the watcher polls every 0.5 s
@@ -68,10 +72,13 @@ proc = subprocess.Popen([APP], env=env, stdout=subprocess.DEVNULL, stderr=subpro
 pid = proc.pid
 try:
     print("• launch + Maccy import")
+    time.sleep(1.5)
+    ctl("import")
     for _ in range(120):
         time.sleep(0.5)
-        if os.path.exists(os.path.join(HOME, ".maccy-imported")):
+        if os.path.exists(os.path.join(HOME, ".maccy-imported-v2")):
             break
+    check(json_setup()["import"].startswith("done"), "setup's Import step finishes")
     time.sleep(1)
     ctl("open")
     d = dump()

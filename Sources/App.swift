@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         history.onPick = { [weak self] in self?.hidePanel() }
         history.needsPastePermission = { [weak self] in self?.showOnboarding() }
         history.skipCapture = { [weak self] in self?.watcher.skipCurrent() }
+        history.holdCapture = { [weak self] held in self?.watcher.isHeld = held }
         buildPanel()
         // Lay the panel out once now, so the first ⌘⇧C doesn't pay for building the view tree.
         history.reload()
@@ -79,7 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // First launch, or an update left Accessibility switched on for the old build only.
         let stalePaste = UserDefaults.standard.bool(forKey: "accessibilityGranted") && !AXIsProcessTrusted()
         if stalePaste { Permissions.resetAccessibility() }
-        var wantsSetup = !UserDefaults.standard.bool(forKey: "onboarded") || stalePaste
+        // Also once for histories from before the import moved into setup, so they get the formats
+        // (pictures behind screenshot copies) the old import skipped.
+        let importPending = Permissions.maccyInstalled && !Permissions.importDone
+            && !UserDefaults.standard.bool(forKey: "offeredImportV2")
+        var wantsSetup = !UserDefaults.standard.bool(forKey: "onboarded") || stalePaste || importPending
+        UserDefaults.standard.set(true, forKey: "offeredImportV2")
         #if STASH_TEST
         wantsSetup = ProcessInfo.processInfo.environment["STASH_ONBOARD"] != nil
         #endif
@@ -87,27 +93,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             DispatchQueue.main.async { self.showOnboarding() }
         }
 
-        // Once per history: the marker lives next to the database, so a fresh history imports again.
-        let marker = Store.directory.appendingPathComponent(".maccy-imported")
-        if !FileManager.default.fileExists(atPath: marker.path) {
-            DispatchQueue.global(qos: .utility).async { [store] in
-                if store.isEmpty { ImageWorker.importMaccy() }
-                FileManager.default.createFile(atPath: marker.path, contents: nil)
-                DispatchQueue.main.async { [weak self] in
-                    if self?.panel.isVisible == true { self?.history.reload() }
-                }
-            }
+        // Importing Maccy's history happens from the setup window, where macOS's prompt for reading
+        // another app's data makes sense to the user.
+        permissions.runImport = { ImageWorker.importMaccy() }
+        permissions.onImported = { [weak self] in
+            guard let self, self.panel.isVisible else { return }
+            self.history.reload()
         }
 
         #if STASH_TEST
         TestHook.install(app: self, history: history, watcher: watcher)
         #endif
-    }
-
-    /// An image copied from Stash is only promised to the pasteboard; hand over the real data before
-    /// quitting so it can still be pasted afterwards.
-    func applicationWillTerminate(_ notification: Notification) {
-        ImageProvider.resolveBeforeQuit()
     }
 
     private func buildPanel() {
@@ -237,7 +233,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.activate()
         onboardingWindow?.makeKeyAndOrderFront(nil)
         if let window = onboardingWindow {
-            WindowChrome.placeTrafficLights(on: window)
+            // The system places the close button; only minimize and zoom are hidden, since this window
+            // does neither.
             window.standardWindowButton(.miniaturizeButton)?.isHidden = true
             window.standardWindowButton(.zoomButton)?.isHidden = true
             DispatchQueue.main.async { window.invalidateShadow() }

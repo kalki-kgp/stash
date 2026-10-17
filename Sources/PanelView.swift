@@ -156,7 +156,15 @@ private struct RowView: View {
                 IconTile(symbol: "photo", hue: 2, size: 28)
             }
         case .file:
-            IconTile(symbol: "doc.fill", hue: 5, size: 28)
+            if let hash = row.imageHash, let image = history.thumbnail(hash) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 48, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            } else {
+                IconTile(symbol: "doc.fill", hue: 5, size: 28)
+            }
         case .text:
             if let app = row.app, let icon = history.icon(for: app) {
                 Image(nsImage: icon).frame(width: 28, height: 28)

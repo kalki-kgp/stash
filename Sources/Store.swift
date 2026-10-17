@@ -121,7 +121,10 @@ final class Store {
             let hash = item.contentHash
             let bump = prepare("""
                 UPDATE items SET last_at = max(last_at, ?), first_at = min(first_at, ?), copies = copies + ?,
-                    pinned = max(pinned, ?), app = coalesce(?, app) WHERE hash = ?
+                    pinned = max(pinned, ?), app = coalesce(?, app),
+                    rtf = coalesce(rtf, ?), html = coalesce(html, ?), image = coalesce(image, ?),
+                    width = coalesce(width, ?), height = coalesce(height, ?)
+                WHERE hash = ?
                 """)
             defer { sqlite3_finalize(bump) }
             bind(bump, 1, item.lastAt.timeIntervalSince1970)
@@ -129,7 +132,15 @@ final class Store {
             sqlite3_bind_int(bump, 3, Int32(item.copies))
             sqlite3_bind_int(bump, 4, item.pinned ? 1 : 0)
             bind(bump, 5, item.app)
-            bind(bump, 6, hash)
+            // A later copy of the same thing may carry formats the first one didn't.
+            bind(bump, 6, item.rtf.flatMap(Self.compress))
+            bind(bump, 7, item.html.flatMap(Self.compress))
+            bind(bump, 8, item.imageHash)
+            if let size = item.imageSize {
+                sqlite3_bind_int(bump, 9, Int32(size.width))
+                sqlite3_bind_int(bump, 10, Int32(size.height))
+            }
+            bind(bump, 11, hash)
             sqlite3_step(bump)
             if sqlite3_changes(db) > 0 { return true }
 
@@ -153,7 +164,7 @@ final class Store {
             bind(insert, 11, item.app)
             bind(insert, 12, item.firstAt.timeIntervalSince1970)
             bind(insert, 13, item.lastAt.timeIntervalSince1970)
-            sqlite3_bind_int(insert, 14, Int32(item.copies))
+            sqlite3_bind_int(insert, 14, Int32(max(1, item.copies)))
             sqlite3_bind_int(insert, 15, item.pinned ? 1 : 0)
             return sqlite3_step(insert) == SQLITE_DONE
         }

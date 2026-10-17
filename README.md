@@ -69,15 +69,16 @@ Stash lives in the menu bar. It has no Dock icon. On first launch it opens a set
 
 | Step | What it's for |
 |---|---|
-| **Paste into apps** | Lets ⌥↩ paste straight into the app you're working in. Click **Allow**, then turn on **Stash** in the Accessibility list that opens. |
+| **Paste into apps** | Lets ⌥↩ paste straight into the app you're working in. Click **Allow**, choose **Open System Settings** in the macOS prompt, and turn on **Stash** in the Accessibility list. |
 | **Read the clipboard** | Saves each copy as you make it. If macOS asks whether Stash may paste from other apps, choose **Allow**. |
 | **Open at login** | Starts Stash with your Mac so no copy is missed. |
+| **Bring over your Maccy history** | Only appears if Maccy is installed. Click **Import**. macOS asks whether Stash may *access data from other apps*, because Maccy's history lives in Maccy's own folder. Choose **Allow**. Maccy's data is only read, never changed. |
 | **Maccy is using ⌘⇧C** | Only appears if Maccy is running, since both apps use the same shortcut. **Quit Maccy** frees it. |
 | **Try it** | Press ⌘⇧C. The row turns to *Works* once the shortcut reaches Stash. |
 
 Each row updates as soon as you change the setting, so you can see when everything is ready. To open this window again, right-click the menu bar icon and choose **Set Up Stash…**
 
-**Coming from Maccy?** Stash imports your Maccy history on first launch. It only reads Maccy's data and never changes it.
+**Coming from Maccy?** Use the **Import** step in the setup window. Your pins, copy counts and pictures come along.
 
 ## Using it
 
@@ -131,7 +132,19 @@ Another app is using the shortcut. Only one app can hold it, and Maccy keeps it 
 
 Stash needs Accessibility access to paste for you. Right-click the menu bar icon → **Set Up Stash…** → **Allow** next to *Paste into apps*, then turn Stash on in the list.
 
-**After updating Stash**, macOS treats the new version as a different app, and the old switch stops working even though it still looks on. Stash detects this when it launches and opens the setup window. Click **Allow** again. If Stash is listed twice in Accessibility, remove both with the **–** button and allow it again.
+**After updating Stash**, macOS treats the new version as a different app, and the old switch stops working even though it still looks on. Stash detects this when it launches and opens the setup window. Click **Allow**, which clears the old entry first, and turn Stash on again. If the row still says *Still off* after you've turned it on, click **Try Again**.
+</details>
+
+<details>
+<summary><b>Import says macOS didn't allow access</b></summary>
+
+You chose *Don't Allow* when macOS asked whether Stash may access data from other apps. Click **Try Again** in the setup window. Stash clears that answer so macOS asks once more. This time choose **Allow**.
+</details>
+
+<details>
+<summary><b>A pasted picture shows up as a file path</b></summary>
+
+Some screenshot tools copy a picture together with a link to a temporary file. Stash keeps both, as the original copy did, and each app takes the format it understands. Text-only places, like a shell prompt, take the path. In Claude Code, paste pictures with **Ctrl+V**, which reads the picture itself.
 </details>
 
 <details>
@@ -169,7 +182,7 @@ tccutil reset Accessibility dev.kalki.stash
 ## How it stays small
 
 - **Text** lives in SQLite with a trigram index, so search runs on disk instead of over a copy in memory.
-- **Formatting** (RTF, HTML) is compressed with LZFSE. Web archives and duplicate encodings of the same text aren't kept.
+- **Every useful format of a copy is kept** (text, formatting, file links, picture), so picking an item puts back what you copied and each app reads what it understands. Formatting (RTF, HTML) is compressed with LZFSE. Web archives and duplicate encodings of the same text aren't kept.
 - **Images** are stored once per picture (named by a hash of their pixels) as HEIC, which is about 60× smaller than the TIFF macOS puts on the clipboard. The list shows small thumbnails.
 - **Big images are decoded in a short-lived helper process.** Decoding a 26 MB screenshot leaves that much memory with the allocator for as long as the process runs. In a helper, it goes back to the system as soon as the helper exits.
 

@@ -11,9 +11,24 @@ final class Permissions: ObservableObject {
     @Published private(set) var login = SMAppService.mainApp.status
     @Published private(set) var maccyRunning = false
     @Published var shortcutWorked = false
+    @Published private(set) var maccyImport: ImportState = Permissions.importDone ? .done(nil) : .notStarted
+    /// Runs the import (in a child process) and returns the item count, or nil if access was refused.
+    var runImport: (() -> Int?)?
+    var onImported: (() -> Void)?
+
+    enum ImportState: Equatable { case notStarted, running, done(Int?), blocked }
+
+    /// Written once a full import (every format) has finished for this history.
+    static var importMarker: URL { Store.directory.appendingPathComponent(".maccy-imported-v2") }
+    static var importDone: Bool { FileManager.default.fileExists(atPath: importMarker.path) }
+    static var maccyInstalled: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: maccyID) != nil }
     /// Set once Stash has read the clipboard on purpose; until then `.default` means "not asked yet".
     @Published private(set) var probedClipboard = false
+    /// When Allow was last clicked for pasting; if access still isn't there a few seconds later the
+    /// row offers to try again.
+    @Published private(set) var pasteRequestedAt: Date?
     private var timer: Timer?
+    private var observers: [NSObjectProtocol] = []
 
     static let maccyID = "org.p0deje.Maccy"
 
@@ -21,19 +36,41 @@ final class Permissions: ObservableObject {
         clipboard == .alwaysAllow || (clipboard == .default && probedClipboard)
     }
 
+    /// Re-checks every second, the moment macOS announces an accessibility change, and whenever the
+    /// user comes back to Stash from System Settings.
     func startWatching() {
         refresh()
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+        guard observers.isEmpty else { return }
+        observers.append(DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.accessibility.api"), object: nil, queue: .main
+        ) { [weak self] _ in
+            // The trust value lags the notification slightly.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.refresh() }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.refresh() })
     }
 
     func stopWatching() {
         timer?.invalidate()
         timer = nil
+        observers.forEach {
+            DistributedNotificationCenter.default().removeObserver($0)
+            NotificationCenter.default.removeObserver($0)
+        }
+        observers = []
     }
+
+    /// True once Allow was clicked a while ago and access still hasn't arrived.
+    @Published private(set) var pasteLooksStuck = false
 
     func refresh() {
         canPaste = AXIsProcessTrusted()
+        let stuck = !canPaste && pasteRequestedAt.map { Date().timeIntervalSince($0) > 6 } == true
+        if stuck != pasteLooksStuck { pasteLooksStuck = stuck }
         clipboard = NSPasteboard.general.accessBehavior
         login = SMAppService.mainApp.status
         maccyRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: Self.maccyID).isEmpty
@@ -41,15 +78,14 @@ final class Permissions: ObservableObject {
     }
 
     func allowPasting() {
-        // A grant from an earlier build of Stash no longer matches this one; clear it so macOS asks afresh
-        // instead of showing a switch that's on but does nothing.
-        if UserDefaults.standard.bool(forKey: "accessibilityGranted") {
-            Self.resetAccessibility()
-        }
+        // macOS ties the Accessibility switch to one exact build. An entry left by another build or
+        // another copy of Stash shows as on but does nothing, so clear any entry first; the system
+        // alert then creates a fresh one for the copy that's running, and its button opens the list.
+        Self.resetAccessibility()
+        pasteRequestedAt = Date()
+        pasteLooksStuck = false
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options) {
-            Self.openSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        }
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 
     /// Reading the clipboard on purpose brings up macOS's paste-privacy alert now, while the user is
@@ -72,6 +108,33 @@ final class Permissions: ObservableObject {
             try? SMAppService.mainApp.unregister()
         }
         refresh()
+    }
+
+    func importMaccy() {
+        guard maccyImport != .running, let runImport else { return }
+        // After a "Don't Allow", macOS won't ask again until the answer is cleared.
+        if maccyImport == .blocked { Self.resetAppDataAccess() }
+        maccyImport = .running
+        DispatchQueue.global(qos: .userInitiated).async {
+            let count = runImport()
+            DispatchQueue.main.async {
+                if let count {
+                    FileManager.default.createFile(atPath: Self.importMarker.path, contents: nil)
+                    self.maccyImport = .done(count)
+                    self.onImported?()
+                } else {
+                    self.maccyImport = .blocked
+                }
+            }
+        }
+    }
+
+    private static func resetAppDataAccess() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", "SystemPolicyAppData", Bundle.main.bundleIdentifier ?? "dev.kalki.stash"]
+        try? process.run()
+        process.waitUntilExit()
     }
 
     func quitMaccy() {
@@ -114,11 +177,16 @@ struct OnboardingView: View {
             .padding(.top, 18)
 
             ChromeCard {
-                ChromeRow(title: "Paste into apps", detail: "Lets ⌥↩ paste the item into the app you're in.") {
+                ChromeRow(title: "Paste into apps",
+                          detail: permissions.pasteLooksStuck
+                              ? "Still off. Click Try Again, then turn Stash on in the list."
+                              : "Lets ⌥↩ paste the item into the app you're in.") {
                     IconTile(symbol: "arrow.down.doc.fill", hue: 5)
                 } control: {
                     if permissions.canPaste { Granted() } else {
-                        ChromeTextButton(symbol: "lock.open.fill", title: "Allow", help: "Open the Accessibility settings") {
+                        ChromeTextButton(symbol: permissions.pasteLooksStuck ? "arrow.clockwise" : "lock.open.fill",
+                                         title: permissions.pasteLooksStuck ? "Try Again" : "Allow",
+                                         help: "Ask macOS for Accessibility access") {
                             permissions.allowPasting()
                         }
                     }
@@ -149,6 +217,27 @@ struct OnboardingView: View {
                     } else {
                         SettingsSwitch(isOn: Binding(get: { permissions.login == .enabled },
                                                      set: { permissions.setOpenAtLogin($0) }))
+                    }
+                }
+                if Permissions.maccyInstalled {
+                    ChromeRowDivider(inset: 50)
+                    ChromeRow(title: "Bring over your Maccy history", detail: importDetail) {
+                        IconTile(symbol: "tray.and.arrow.down.fill", hue: 2)
+                    } control: {
+                        switch permissions.maccyImport {
+                        case .notStarted:
+                            ChromeTextButton(symbol: "tray.and.arrow.down", title: "Import", help: "Copy Maccy's history into Stash") {
+                                permissions.importMaccy()
+                            }
+                        case .running:
+                            ProgressView().controlSize(.small).padding(.trailing, 10)
+                        case .done:
+                            Granted(label: "Imported")
+                        case .blocked:
+                            ChromeTextButton(symbol: "arrow.clockwise", title: "Try Again", help: "Ask macOS again") {
+                                permissions.importMaccy()
+                            }
+                        }
                     }
                 }
                 if permissions.maccyRunning {
@@ -184,6 +273,18 @@ struct OnboardingView: View {
         .padding(.bottom, 22)
         .frame(width: 520)
         .animation(Chrome.panelSlide, value: permissions.maccyRunning)
+    }
+}
+
+extension OnboardingView {
+    var importDetail: String {
+        switch permissions.maccyImport {
+        case .notStarted: "Copies it into Stash. Maccy's own data isn't changed."
+        case .running: "Importing. If macOS asks to access data from other apps, choose Allow."
+        case .done(let count?): count == 1 ? "1 item brought over." : "\(count) items brought over."
+        case .done(nil): "Your Maccy history is in Stash."
+        case .blocked: "macOS didn't allow access. Click Try Again, then choose Allow."
+        }
     }
 }
 

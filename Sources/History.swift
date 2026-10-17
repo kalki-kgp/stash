@@ -21,6 +21,7 @@ final class History: ObservableObject {
     /// Called instead of pasting when Stash isn't allowed to send keystrokes yet.
     var needsPastePermission: (() -> Void)?
     var skipCapture: (() -> Void)?
+    var holdCapture: ((Bool) -> Void)?
 
     private static let page = 60
     private var pageSize = page
@@ -66,15 +67,32 @@ final class History: ObservableObject {
 
     func pick(_ row: Row, _ mode: PickMode = .copy) {
         guard var content = store.content(row.id) else { return }
-        if mode == .pastePlain, content.kind == .text {
-            content = Content(kind: .text, text: content.text, rtf: nil, html: nil, files: [], imageHash: nil)
+        if mode == .pastePlain {
+            content = Content(kind: content.kind, text: content.text, rtf: nil, html: nil, files: content.files,
+                              imageHash: content.imageHash)
         }
-        Paste.write(content)
-        skipCapture?()
         store.touch(row.id)
         onPick?()
-        guard mode != .copy else { return }
-        if AXIsProcessTrusted() { Self.pasteIntoFrontApp() } else { needsPastePermission?() }
+        let finish = { [weak self] in
+            self?.skipCapture?()
+            guard mode != .copy else { return }
+            if AXIsProcessTrusted() { Self.pasteIntoFrontApp() } else { self?.needsPastePermission?() }
+        }
+        guard content.imageHash != nil, !Capture.readsImages else {
+            Paste.write(content)
+            finish()
+            return
+        }
+        // Pictures are decoded and written by a helper; capture holds off until it's done so
+        // Stash doesn't record its own paste.
+        holdCapture?(true)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = ImageWorker.paste(row.id)
+            DispatchQueue.main.async {
+                self.holdCapture?(false)
+                finish()
+            }
+        }
     }
 
     /// The mode a click or ⌘/⌥ number asks for, from the modifiers held at that moment.

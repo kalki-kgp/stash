@@ -4,8 +4,8 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Turns raw pasteboard data (live, or one of Maccy's saved items) into a `NewItem`.
-/// Keeps one plain-text copy plus RTF/HTML for formatting, and drops the rest: UTF-16 duplicates,
-/// web archives, browser tokens and file icons.
+/// Keeps file links, one plain-text copy, RTF/HTML formatting and the picture, and drops the rest:
+/// UTF-16 duplicates, web archives and browser tokens.
 enum Capture {
     /// Password managers and apps that mark a copy as private or temporary (nspasteboard.org).
     static let ignoredTypes: Set<String> = [
@@ -21,25 +21,24 @@ enum Capture {
     static let png = NSPasteboard.PasteboardType.png.rawValue
     static let tiff = NSPasteboard.PasteboardType.tiff.rawValue
 
-    /// Reads only the types it might keep, so a 27 MB web archive is never pulled into memory.
+    /// Reads every format Stash keeps (file links, text, formatting, picture), so picking the item later
+    /// puts back what was copied and each app takes the format it understands. Formats it doesn't keep
+    /// (web archives, app-private types) are never pulled into memory.
     static func read(_ pasteboard: NSPasteboard) -> [String: Data]? {
         guard let item = pasteboard.pasteboardItems?.first else { return nil }
         let types = Set(item.types.map(\.rawValue))
         guard types.isDisjoint(with: ignoredTypes) else { return nil }
         var data: [String: Data] = [:]
-        if types.contains(fileURL) {
-            let urls = (pasteboard.pasteboardItems ?? []).compactMap { $0.string(forType: .fileURL) }
-            data[fileURL] = Data(urls.joined(separator: "\n").utf8)
-            return data
-        }
+        let urls = (pasteboard.pasteboardItems ?? []).compactMap { $0.string(forType: .fileURL) }
+        if !urls.isEmpty { data[fileURL] = Data(urls.joined(separator: "\n").utf8) }
         for type in [text, rtf, html] where types.contains(type) {
             data[type] = item.data(forType: NSPasteboard.PasteboardType(type))
         }
-        if data[text] == nil, let type = [png, tiff].first(where: types.contains) {
+        if let type = [png, tiff].first(where: types.contains) {
             if readsImages {
                 data[type] = item.data(forType: NSPasteboard.PasteboardType(type))
             } else {
-                // The image stays on the pasteboard; a child process reads and stores it.
+                // The picture stays on the pasteboard; a child process reads and stores it.
                 data[imageOnPasteboard] = Data(String(pasteboard.changeCount).utf8)
             }
         }
@@ -50,23 +49,19 @@ enum Capture {
     static var readsImages = true
     static let imageOnPasteboard = "dev.kalki.stash.image-on-pasteboard"
 
-    /// Builds the item; image work (decode, hash, HEIC encode) happens here, so call it off the main thread.
+    /// Builds the item from everything that was copied; the kind only decides how its row looks.
+    /// Image work (decode, hash, HEIC encode) happens here, so call it off the main thread.
     static func item(from data: [String: Data], app: String?) -> NewItem? {
-        if let urls = data[fileURL].flatMap({ String(data: $0, encoding: .utf8) }) {
-            let files = urls.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-            guard !files.isEmpty else { return nil }
-            return NewItem(kind: .file, text: nil, rtf: nil, html: nil, files: files, app: app)
-        }
-        if let string = data[text].flatMap({ String(data: $0, encoding: .utf8) }),
-           !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return NewItem(kind: .text, text: string, rtf: data[rtf], html: data[html], app: app)
-        }
+        let files = data[fileURL].map { String(decoding: $0, as: UTF8.self) }?
+            .split(separator: "\n").map(String.init).filter { !$0.isEmpty } ?? []
+        let string = data[text].flatMap { String(data: $0, encoding: .utf8) }
+        let hasText = string.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
         let pending = data[imageOnPasteboard].flatMap { Int(String(decoding: $0, as: UTF8.self)) }
-        if let stored = pending.flatMap(ImageWorker.captureFromPasteboard) ?? (data[png] ?? data[tiff]).flatMap(storeImage) {
-            return NewItem(kind: .image, text: nil, rtf: nil, html: nil,
-                           imageHash: stored.hash, imageSize: stored.size, app: app)
-        }
-        return nil
+        let picture = pending.flatMap(ImageWorker.captureFromPasteboard) ?? (data[png] ?? data[tiff]).flatMap(storeImage)
+        let kind: ItemKind
+        if !files.isEmpty { kind = .file } else if hasText { kind = .text } else if picture != nil { kind = .image } else { return nil }
+        return NewItem(kind: kind, text: string, rtf: data[rtf], html: data[html], files: files,
+                       imageHash: picture?.hash, imageSize: picture?.size, app: app)
     }
 
     /// Writes the image as HEIC (quality 0.9) plus a small thumbnail, named by a hash of its pixels,
@@ -129,6 +124,9 @@ final class Watcher {
     /// Called after Stash itself writes the pasteboard, so its own copy isn't recorded again.
     func skipCurrent() { lastChange = NSPasteboard.general.changeCount }
 
+    /// Set while Stash's own paste helper is writing the clipboard.
+    var isHeld = false
+
     /// While paused, copies are seen but not saved.
     var isPaused = false
     /// Drops the next copy only (Maccy's ⌥⇧-click on the menu bar icon).
@@ -136,7 +134,7 @@ final class Watcher {
 
     private func poll() {
         let pasteboard = NSPasteboard.general
-        guard pasteboard.changeCount != lastChange else { return }
+        guard pasteboard.changeCount != lastChange, !isHeld else { return }
         lastChange = pasteboard.changeCount
         if ignoreNext { ignoreNext = false; return }
         guard !isPaused, let data = Capture.read(pasteboard) else { return }
@@ -157,6 +155,7 @@ final class Watcher {
 enum ImageWorker {
     static let captureFlag = "--capture-image"
     static let importFlag = "--import-maccy"
+    static let pasteFlag = "--paste"
 
     /// Stores the image on the general pasteboard, provided it's still the copy with this change count.
     static func captureFromPasteboard(changeCount: Int) -> (hash: String, size: CGSize)? {
@@ -166,8 +165,17 @@ enum ImageWorker {
         return (String(parts[0]), CGSize(width: width, height: height))
     }
 
-    /// Runs the whole Maccy import in a child and waits for it.
-    static func importMaccy() { _ = runChild([importFlag]) }
+    /// Runs the Maccy import in a child and waits for it (including for the user to answer macOS's
+    /// prompt). The number of items brought over, or nil when Maccy's data couldn't be read.
+    static func importMaccy() -> Int? {
+        runChild([importFlag]).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+
+    /// Puts an item with a picture on the clipboard from a child: the image is decoded and the PNG and
+    /// TIFF written there, so they stay pasteable even if Stash quits. Returns the new change count.
+    static func paste(_ id: Int64) -> Int? {
+        runChild([pasteFlag, String(id)]).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
 
     private static func runChild(_ arguments: [String]) -> String? {
         guard let executable = Bundle.main.executableURL else { return nil }
@@ -197,7 +205,13 @@ enum ImageWorker {
             print("\(stored.hash) \(Int(stored.size.width)) \(Int(stored.size.height))")
             exit(0)
         case importFlag:
-            _ = MaccyImport.run(into: Store())
+            guard let count = MaccyImport.run(into: Store()) else { exit(2) }
+            print(count)
+            exit(0)
+        case pasteFlag:
+            guard args.count == 3, let id = Int64(args[2]), let content = Store().content(id) else { exit(1) }
+            Paste.write(content)
+            print(NSPasteboard.general.changeCount)
             exit(0)
         default:
             return
