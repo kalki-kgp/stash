@@ -20,6 +20,7 @@ final class History: ObservableObject {
     var onPick: (() -> Void)?
     /// Called instead of pasting when Stash isn't allowed to send keystrokes yet.
     var needsPastePermission: (() -> Void)?
+    var openSettings: (() -> Void)?
     var skipCapture: (() -> Void)?
     var holdCapture: ((Bool) -> Void)?
 
@@ -161,6 +162,9 @@ final class History: ObservableObject {
             return true
         case kVK_ANSI_P where flags == [.option]:
             if let row = selectedRow { togglePin(row) }
+            return true
+        case kVK_ANSI_Comma where flags == [.command]:
+            openSettings?()
             return true
         default:
             guard let n = Self.digitCodes.firstIndex(of: Int(event.keyCode)),

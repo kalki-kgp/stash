@@ -77,6 +77,7 @@ struct PanelView: View {
                 }
             }
             Spacer()
+            ChromeCircleButton(symbol: "gearshape", help: "Settings") { history.openSettings?() }
             ChromeCircleButton(symbol: "power", help: "Quit Stash") { NSApp.terminate(nil) }
         }
     }

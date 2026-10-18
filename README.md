@@ -76,7 +76,7 @@ Stash lives in the menu bar. It has no Dock icon. On first launch it opens a set
 | **Maccy is using ⌘⇧C** | Only appears if Maccy is running, since both apps use the same shortcut. **Quit Maccy** frees it. |
 | **Try it** | Press ⌘⇧C. The row turns to *Works* once the shortcut reaches Stash. |
 
-Each row updates as soon as you change the setting, so you can see when everything is ready. To open this window again, right-click the menu bar icon and choose **Set Up Stash…**
+Each row updates as soon as you change the setting, so you can see when everything is ready. To open this window again, click the gear button at the bottom of the panel, press **⌘,** while the panel is open, or right-click the menu bar icon and choose **Settings…**
 
 **Coming from Maccy?** Use the **Import** step in the setup window. Your pins, copy counts and pictures come along.
 
@@ -95,6 +95,7 @@ Press **⌘⇧C** anywhere. Start typing to search. Stash matches exact text fir
 | ⌥⌫ | Delete the item |
 | ⌥⌘⌫ | Clear everything except pinned |
 | ⇧⌥⌘⌫ | Clear everything |
+| ⌘, | Settings |
 | esc | Close |
 
 Hover over an item for a moment to see its full text. Right-click an item to copy, paste, pin or delete it.
@@ -130,7 +131,7 @@ Another app is using the shortcut. Only one app can hold it, and Maccy keeps it 
 <details>
 <summary><b>⌥↩ copies but doesn't paste</b></summary>
 
-Stash needs Accessibility access to paste for you. Right-click the menu bar icon → **Set Up Stash…** → **Allow** next to *Paste into apps*, then turn Stash on in the list.
+Stash needs Accessibility access to paste for you. Click the gear button in the panel (or right-click the menu bar icon → **Settings…**), then **Allow** next to *Paste into apps*, then turn Stash on in the list.
 
 **After updating Stash**, macOS treats the new version as a different app, and the old switch stops working even though it still looks on. Stash detects this when it launches and opens the setup window. Click **Allow**, which clears the old entry first, and turn Stash on again. If the row still says *Still off* after you've turned it on, click **Try Again**.
 </details>

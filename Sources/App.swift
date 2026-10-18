@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         history.onPick = { [weak self] in self?.hidePanel() }
         history.needsPastePermission = { [weak self] in self?.showOnboarding() }
+        history.openSettings = { [weak self] in self?.showOnboarding() }
         history.skipCapture = { [weak self] in self?.watcher.skipCurrent() }
         history.holdCapture = { [weak self] held in self?.watcher.isHeld = held }
         buildPanel()
@@ -168,11 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let pause = menu.addItem(withTitle: watcher.isPaused ? "Resume Saving Copies" : "Pause Saving Copies",
                                  action: #selector(togglePause), keyEquivalent: "")
         pause.target = self
-        menu.addItem(withTitle: "Set Up Stash…", action: #selector(openOnboarding), keyEquivalent: "").target = self
         let login = menu.addItem(withTitle: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Settings…", action: #selector(openOnboarding), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Quit Stash", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
@@ -214,16 +215,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.title = "Set Up Stash"
+            window.title = "Stash Settings"
             let root = OnboardingView(permissions: permissions) { [weak window] in window?.close() }
+                // Rows come and go (Quit Maccy removes one), so the window follows the content's
+                // height, keeping its top edge in place.
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { [weak window] height in
+                    guard let window, abs(height - window.frame.height) > 0.5 else { return }
+                    var frame = window.frame
+                    frame.origin.y += frame.height - height
+                    frame.size.height = height
+                    window.setFrame(frame, display: true, animate: true)
+                    window.invalidateShadow()
+                }
                 .background(WindowGlass())
                 .buttonBorderShape(.capsule)
             // Measured with a hosting view that sizes to its content; the window's own one follows the frame.
             let size = NSHostingView(rootView: root).fittingSize
             let hosting = WindowHostingView(rootView: AnyView(root))
-            window.setContentSize(size)
-            hosting.frame = NSRect(origin: .zero, size: size)
-            let container = NSView(frame: hosting.frame)
+            // The content runs under the title bar, so the frame itself is the glass's size. Sizing the
+            // content instead adds title bar and toolbar height, which leaves a band of bare window
+            // (with its outline and the close button) around the glass.
+            window.setFrame(NSRect(origin: .zero, size: size), display: false)
+            let container = NSView(frame: NSRect(origin: .zero, size: size))
+            hosting.frame = container.bounds
             container.addSubview(hosting)
             window.contentView = container
             window.center()
