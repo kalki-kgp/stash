@@ -30,7 +30,7 @@ Same history, two apps:
 
 ## Install
 
-**Needs:** macOS 26 (Tahoe) or later on an Apple silicon Mac.
+**Needs:** macOS 26 (Tahoe) or later. One download runs natively on both Apple silicon and Intel Macs.
 
 1. Download `Stash-<version>.dmg` from [Releases](https://github.com/kalki-kgp/stash/releases/latest).
 2. Open the DMG and drag **Stash** onto **Applications**.
@@ -73,8 +73,9 @@ Stash lives in the menu bar. It has no Dock icon. On first launch it opens a set
 | **Read the clipboard** | Saves each copy as you make it. If macOS asks whether Stash may paste from other apps, choose **Allow**. |
 | **Open at login** | Starts Stash with your Mac so no copy is missed. |
 | **Bring over your Maccy history** | Only appears if Maccy is installed. Click **Import**. macOS asks whether Stash may *access data from other apps*, because Maccy's history lives in Maccy's own folder. Choose **Allow**. Maccy's data is only read, never changed. |
-| **Maccy is using ⌘⇧C** | Only appears if Maccy is running, since both apps use the same shortcut. **Quit Maccy** frees it. |
-| **Try it** | Press ⌘⇧C. The row turns to *Works* once the shortcut reaches Stash. |
+| **Open Stash** | The shortcut, ⌘⇧C to start. Click it and press any combination with ⌘, ⌥ or ⌃ (F-keys work on their own) to change it. Combinations macOS already uses are turned down. |
+| **Maccy is running** | Only appears while Maccy is running and the shortcut hasn't reached Stash yet, since Maccy keeps ⌘⇧C while it runs. **Quit Maccy** frees it, or record a different shortcut. |
+| **Try it** | Press the shortcut. The row turns to *Works* once it reaches Stash. |
 
 Each row updates as soon as you change the setting, so you can see when everything is ready. To open this window again, click the gear button at the bottom of the panel, press **⌘,** while the panel is open, or right-click the menu bar icon and choose **Settings…**
 
@@ -82,11 +83,11 @@ Each row updates as soon as you change the setting, so you can see when everythi
 
 ## Using it
 
-Press **⌘⇧C** anywhere. Start typing to search. Stash matches exact text first, then fuzzy matches (`stsh` finds `stash`).
+Press **⌘⇧C** anywhere (or your own shortcut: open Settings, click the shortcut and press a new one). Start typing to search. Stash matches exact text first, then fuzzy matches (`stsh` finds `stash`).
 
 | Keys | Action |
 |---|---|
-| ⌘⇧C | Open / close |
+| ⌘⇧C | Open / close (change it in Settings) |
 | ↩ · click · ⌘1–9 | Copy the item |
 | ⌥↩ · ⌥-click · ⌥1–9 | Copy and paste into the current app |
 | ⌥⇧↩ · ⌥⇧-click · ⌥⇧1–9 | Paste without formatting |
@@ -123,9 +124,9 @@ The button only shows for about an hour after you try to open the app. Open Stas
 </details>
 
 <details>
-<summary><b>⌘⇧C does nothing</b></summary>
+<summary><b>The shortcut (⌘⇧C) does nothing</b></summary>
 
-Another app is using the shortcut. Only one app can hold it, and Maccy keeps it whenever it's running. Quit the other app (the setup window has a button for Maccy). To stop Maccy from coming back at login, remove it in **System Settings → General → Login Items**. You can always click the menu bar icon instead.
+Another app is using the shortcut. Maccy keeps ⌘⇧C whenever it's running. Quit the other app (Settings has a button for Maccy), or pick a different shortcut in Settings. To stop Maccy from coming back at login, remove it in **System Settings → General → Login Items**. You can always click the menu bar icon instead.
 </details>
 
 <details>
@@ -196,6 +197,8 @@ Needs macOS 26 and the Command Line Tools (Xcode not required).
 ./test.sh                  # storage, search, capture, paste and import tests
 Scripts/make-dmg.sh        # dist/Stash-<version>.dmg
 ```
+
+`./build.sh` makes one universal app for Apple silicon and Intel; `ARCHS=arm64 ./build.sh` builds only one slice, for quicker local builds. On Apple silicon, `ARCH=x86_64 ./test.sh` runs the tests as Intel code through Rosetta.
 
 `./build.sh test` adds a hook that `Tests/e2e/run.py` uses to drive the real app through the system clipboard.
 

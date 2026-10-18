@@ -35,6 +35,17 @@ enum TestHook {
                     }
                 }
             case "hotkey": app.togglePanelForTest()
+            // shortcut:<keyCode>:<Carbon modifiers> sets it the way a recording would.
+            case "shortcut": app.shortcutForTest.apply(Shortcut(keyCode: UInt32(parts[1]) ?? 0, modifiers: UInt32(parts[2]) ?? 0))
+            case "record": app.shortcutForTest.startRecording()
+            // presskey:<keyCode>:<modifier flags raw value>, through the app's event queue like a real press.
+            case "presskey":
+                let flags = NSEvent.ModifierFlags(rawValue: UInt(parts[2]) ?? 0)
+                if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                                                windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "",
+                                                isARepeat: false, keyCode: UInt16(parts[1]) ?? 0) {
+                    NSApp.postEvent(event, atStart: false)
+                }
             case "quitmaccy": app.permissionsForTest.quitMaccy()
             case "import": app.permissionsForTest.importMaccy()
             case "hover": history.hoverArmed = true
@@ -51,6 +62,9 @@ enum TestHook {
                     "selected": selected ?? -1,
                     "hotKey": app.hotKeyRegistered,
                     "openMs": app.lastOpenMs,
+                    "shortcut": app.shortcutForTest.current.display,
+                    "shortcutProblem": app.shortcutForTest.problem ?? "",
+                    "recording": app.shortcutForTest.isRecording,
                     "setup": [
                         "visible": app.onboardingVisibleForTest,
                         "canPaste": app.permissionsForTest.canPaste,

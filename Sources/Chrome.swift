@@ -103,6 +103,9 @@ enum WindowChrome {
         window.toolbar?.showsBaselineSeparator = false
         window.isOpaque = false
         window.backgroundColor = .clear
+        // A clear window lets clicks and scrolls on its see-through parts fall to the window behind,
+        // which then comes forward. Saying so explicitly keeps every mouse event inside the window.
+        window.ignoresMouseEvents = false
         window.hasShadow = true
         window.invalidateShadow()
     }

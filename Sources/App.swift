@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var hiding = false
     private var panelSize: NSSize?
     private let permissions = Permissions()
+    private let shortcut = ShortcutSetting()
     private var onboardingWindow: NSWindow?
     private static let panelMargin: CGFloat = 24
 
@@ -68,15 +69,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         history.skipCapture = { [weak self] in self?.watcher.skipCurrent() }
         history.holdCapture = { [weak self] held in self?.watcher.isHeld = held }
         buildPanel()
-        // Lay the panel out once now, so the first ⌘⇧C doesn't pay for building the view tree.
+        // Lay the panel out once now, so the first shortcut press doesn't pay for building the view tree.
         history.reload()
         panelHost.layoutSubtreeIfNeeded()
         panelSize = panelHost.fittingSize
         watcher.start()
-        hotKey = HotKey(keyCode: UInt32(kVK_ANSI_C), modifiers: UInt32(cmdKey | shiftKey)) { [weak self] in
+        let hotKey = HotKey { [weak self] in
             self?.permissions.shortcutWorked = true
             self?.togglePanel(atCursor: true)
         }
+        self.hotKey = hotKey
+        hotKey.register(shortcut.current)
+        shortcut.register = { hotKey.register($0) }
+        shortcut.suspend = { hotKey.unregister() }
+        shortcut.onChange = { [weak self] in self?.permissions.shortcutWorked = false }
 
         // First launch, or an update left Accessibility switched on for the old build only.
         let stalePaste = UserDefaults.standard.bool(forKey: "accessibilityGranted") && !AXIsProcessTrusted()
@@ -111,6 +117,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         panel = GlassPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        // Clicks and scrolls on the see-through parts (gaps between rows, margins) would otherwise
+        // reach the window behind.
+        panel.ignoresMouseEvents = false
         // The glass draws its own edge and shadow; a window shadow would trace the square bounds.
         panel.hasShadow = false
         panel.level = .popUpMenu
@@ -216,7 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.title = "Stash Settings"
-            let root = OnboardingView(permissions: permissions) { [weak window] in window?.close() }
+            let root = OnboardingView(permissions: permissions, shortcut: shortcut) { [weak window] in window?.close() }
                 // Rows come and go (Quit Maccy removes one), so the window follows the content's
                 // height, keeping its top edge in place.
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { [weak window] height in
@@ -259,6 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard (notification.object as? NSWindow) === onboardingWindow else { return }
         UserDefaults.standard.set(true, forKey: "onboarded")
         permissions.stopWatching()
+        shortcut.stopRecording()
         NSApp.setActivationPolicy(.accessory)
     }
 
@@ -346,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     var lastOpenMs = 0.0
     var permissionsForTest: Permissions { permissions }
+    var shortcutForTest: ShortcutSetting { shortcut }
     var onboardingVisibleForTest: Bool { onboardingWindow?.isVisible ?? false }
     #endif
 

@@ -6,7 +6,7 @@ final class HotKey {
     private var handler: EventHandlerRef?
     private let action: () -> Void
 
-    init(keyCode: UInt32, modifiers: UInt32, action: @escaping () -> Void) {
+    init(action: @escaping () -> Void) {
         self.action = action
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
@@ -14,15 +14,28 @@ final class HotKey {
             Unmanaged<HotKey>.fromOpaque(context).takeUnretainedValue().action()
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        let id = EventHotKeyID(signature: OSType(0x5354_5348), id: 1) // 'STSH'
-        RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &ref)
     }
 
-    /// False when another app (Maccy, say) already holds the same shortcut.
+    /// Swaps in a new shortcut. False when it couldn't be registered (another app already holds it);
+    /// nothing is registered then.
+    @discardableResult
+    func register(_ shortcut: Shortcut) -> Bool {
+        unregister()
+        let id = EventHotKeyID(signature: OSType(0x5354_5348), id: 1) // 'STSH'
+        let status = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, id, GetApplicationEventTarget(), 0, &ref)
+        if status != noErr { ref = nil }
+        return ref != nil
+    }
+
+    func unregister() {
+        if let ref { UnregisterEventHotKey(ref) }
+        ref = nil
+    }
+
     var isRegistered: Bool { ref != nil }
 
     deinit {
-        if let ref { UnregisterEventHotKey(ref) }
+        unregister()
         if let handler { RemoveEventHandler(handler) }
     }
 }

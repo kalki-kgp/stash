@@ -264,11 +264,16 @@ DispatchQueue.concurrentPerform(iterations: 8) { worker in
 }
 check(count() == 1600, "1600 concurrent saves all landed (\(count()))")
 
-section("memory: 20k operations")
+section("memory: 40k operations")
 for i in 0..<300 { autoreleasepool { store.save(text("warm \(i)")); _ = Capture.item(from: [Capture.png: pngData], app: nil) } }
-malloc_zone_pressure_relief(nil, 0)
-let startMB = footprintMB()
-for round in 0..<4 {
+// Measured after four warm-up rounds: under Rosetta the first rounds grow the translation and
+// allocator caches by ~30 MB once, then level off.
+var startMB = 0.0
+for round in 0..<8 {
+    if round == 4 {
+        malloc_zone_pressure_relief(nil, 0)
+        startMB = footprintMB()
+    }
     for i in 0..<1000 {
         autoreleasepool {
             store.save(text("cycle \(round) \(i) " + String(repeating: "z", count: 500)))
@@ -283,7 +288,7 @@ store.clear(includingPinned: true)
 malloc_zone_pressure_relief(nil, 0)
 let endMB = footprintMB()
 print("  footprint \(String(format: "%.1f", startMB)) MB → \(String(format: "%.1f", endMB)) MB")
-check(endMB - startMB < 15, "no growth over 20k operations (+\(String(format: "%.1f", endMB - startMB)) MB)")
+check(endMB - startMB < 15, "no growth over the last 20k operations (+\(String(format: "%.1f", endMB - startMB)) MB)")
 
 print("\n\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

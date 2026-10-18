@@ -68,13 +68,16 @@ def footprint(pid):
 
 shutil.rmtree(HOME, ignore_errors=True)
 env = dict(os.environ, STASH_HOME=HOME, MallocStackLogging="1")
-proc = subprocess.Popen([APP], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+# STASH_ARCH=x86_64 runs the Intel slice of the universal app (through Rosetta on Apple silicon).
+arch = os.environ.get("STASH_ARCH")
+proc = subprocess.Popen((["arch", f"-{arch}"] if arch else []) + [APP], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 pid = proc.pid
 try:
     print("• launch + Maccy import")
     time.sleep(1.5)
     ctl("import")
-    for _ in range(120):
+    # Under Rosetta with stack logging the import helper is several times slower.
+    for _ in range(480 if arch else 120):
         time.sleep(0.5)
         if os.path.exists(os.path.join(HOME, ".maccy-imported-v2")):
             break
@@ -165,6 +168,30 @@ try:
     check(f"{marker} after ignore" in previews, "capture resumes after that")
     ctl("close")
 
+    print("• shortcut recorder")
+    # Test builds share the real app's preferences; the shortcut is put back in `finally`.
+    ctl("record")
+    check(dump()["recording"] and not dump()["hotKey"], "recording lets go of the global shortcut")
+    ctl("presskey:9:1572864")  # ⌥⌘V
+    time.sleep(0.3)
+    d = dump()
+    check(d["shortcut"] == "⌥⌘V" and d["hotKey"] and not d["recording"], f"records ⌥⌘V and registers it ({d['shortcut']})")
+    ctl("record")
+    ctl("presskey:0:0")  # a plain A would block typing
+    time.sleep(0.3)
+    d = dump()
+    check(d["recording"] and d["shortcutProblem"], "a key without ⌘, ⌥ or ⌃ is turned down")
+    ctl("presskey:53:0")  # Esc
+    time.sleep(0.3)
+    d = dump()
+    check(not d["recording"] and d["shortcut"] == "⌥⌘V" and d["hotKey"] and not d["shortcutProblem"], "Esc cancels and keeps ⌥⌘V")
+    ctl("shortcut:49:256")  # ⌘Space belongs to Spotlight
+    d = dump()
+    check(d["shortcut"] == "⌥⌘V" and "macOS" in d["shortcutProblem"], "a shortcut macOS uses is turned down")
+    ctl("shortcut:8:768")  # back to ⇧⌘C
+    d = dump()
+    check(d["shortcut"] == "⇧⌘C" and d["hotKey"], "back to ⇧⌘C")
+
     print("• image capture")
     shot = os.path.join(SCRATCH, "imgtest/orig.tiff")
     if os.path.exists(shot):
@@ -180,7 +207,7 @@ try:
         print(f"  footprint after 26 MB image: +{grew:.0f} MB")
         check(grew < 45, "image copy costs the app < 45 MB (the pasteboard read itself)")
 
-    print("• open speed (⌘⇧C → panel drawn)")
+    print("• open speed (shortcut → panel drawn)")
     for i in range(20):
         copy(f"{marker} speed {i}")
     times = []
@@ -190,7 +217,9 @@ try:
         ctl("hotkey")
     times.sort()
     print(f"  open: median {times[len(times)//2]:.1f} ms, worst {times[-1]:.1f} ms")
-    check(times[len(times) // 2] < 30, "median open under 30 ms")
+    # Rosetta's timings say nothing about a real Intel Mac, so the bar is for native runs only.
+    if not arch:
+        check(times[len(times) // 2] < 30, "median open under 30 ms")
 
     print("• stress: 300 open/search/close cycles")
     base = footprint(pid)
@@ -222,6 +251,7 @@ try:
 finally:
     proc.terminate()
     proc.wait(timeout=5)
+    subprocess.run(["defaults", "delete", "dev.kalki.stash", "openShortcut"], capture_output=True)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

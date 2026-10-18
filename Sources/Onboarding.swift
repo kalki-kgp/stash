@@ -158,7 +158,11 @@ final class Permissions: ObservableObject {
 
 struct OnboardingView: View {
     @ObservedObject var permissions: Permissions
+    @ObservedObject var shortcut: ShortcutSetting
     let done: () -> Void
+
+    /// The first time it's the setup; after that the same window is where settings live.
+    private var isFirstRun: Bool { !UserDefaults.standard.bool(forKey: "onboarded") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Chrome.sectionSpacing) {
@@ -167,16 +171,18 @@ struct OnboardingView: View {
                     .resizable()
                     .frame(width: 56, height: 56)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: "Set up Stash")
+                    Text(verbatim: isFirstRun ? "Set up Stash" : "Settings")
                         .font(.system(size: 20, weight: .semibold))
-                    Text(verbatim: "Allow these once and Stash works in every app.")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Chrome.secondaryText)
+                    if isFirstRun {
+                        Text(verbatim: "Allow these once and Stash works in every app.")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Chrome.secondaryText)
+                    }
                 }
             }
             .padding(.top, 18)
 
-            ChromeCard {
+            ChromeSection(title: "Permissions") { ChromeCard {
                 ChromeRow(title: "Paste into apps",
                           detail: permissions.pasteLooksStuck
                               ? "Still off. Click Try Again, then turn Stash on in the list."
@@ -240,10 +246,20 @@ struct OnboardingView: View {
                         }
                     }
                 }
-                if permissions.maccyRunning {
+            } }
+
+            ChromeSection(title: "Shortcut") { ChromeCard {
+                ChromeRow(title: "Open Stash", detail: shortcutDetail) {
+                    IconTile(symbol: "keyboard.fill", hue: 1)
+                } control: {
+                    ShortcutRecorder(setting: shortcut)
+                }
+                // Maccy holds its shortcut while it runs; once ours has fired, there's no clash.
+                if permissions.maccyRunning && !permissions.shortcutWorked {
                     ChromeRowDivider(inset: 50)
-                    ChromeRow(title: "Maccy is using ⌘⇧C", detail: "Quit it so the shortcut opens Stash.") {
-                        IconTile(symbol: "keyboard.fill", hue: 1)
+                    ChromeRow(title: "Maccy is running",
+                              detail: "If it also uses \(shortcut.current.display), it keeps it. Quit Maccy or record another shortcut.") {
+                        IconTile(symbol: "exclamationmark.triangle.fill", hue: 1)
                     } control: {
                         ChromeTextButton(symbol: "xmark", title: "Quit Maccy", help: "Quit Maccy") {
                             permissions.quitMaccy()
@@ -251,17 +267,17 @@ struct OnboardingView: View {
                     }
                 }
                 ChromeRowDivider(inset: 50)
-                ChromeRow(title: "Try it", detail: "Press ⌘⇧C to open your history.") {
+                ChromeRow(title: "Try it", detail: "Press \(shortcut.current.display) to open your history.") {
                     IconTile(symbol: "command", hue: 3)
                 } control: {
                     if permissions.shortcutWorked { Granted(label: "Works") } else {
-                        Text(verbatim: "⌘⇧C")
+                        Text(verbatim: shortcut.current.display)
                             .font(.system(size: 12.5, weight: .medium).monospaced())
                             .foregroundStyle(Chrome.secondaryText)
                             .padding(.trailing, 6)
                     }
                 }
-            }
+            } }
 
             HStack {
                 Spacer()
@@ -273,10 +289,16 @@ struct OnboardingView: View {
         .padding(.bottom, 22)
         .frame(width: 520)
         .animation(Chrome.panelSlide, value: permissions.maccyRunning)
+        .animation(Chrome.panelSlide, value: shortcut.problem)
     }
 }
 
 extension OnboardingView {
+    var shortcutDetail: String {
+        if let problem = shortcut.problem { return problem }
+        return shortcut.isRecording ? "Press the new shortcut. Esc cancels." : "Opens your history from any app."
+    }
+
     var importDetail: String {
         switch permissions.maccyImport {
         case .notStarted: "Copies it into Stash. Maccy's own data isn't changed."
