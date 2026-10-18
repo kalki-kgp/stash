@@ -38,7 +38,7 @@ enum Chrome {
             : .spring(response: 0.32, dampingFraction: 0.9)
     }
 
-    /// The section tile hues the settings sidebar uses.
+    /// Hues for the icon tiles beside settings rows.
     static let tileHues: [Color] = [
         Color(red: 0.345, green: 0.337, blue: 0.839),
         Color(red: 1.000, green: 0.584, blue: 0.000),
@@ -80,7 +80,7 @@ struct WindowGlass: View {
     }
 }
 
-/// Window chrome: a clear, full-size-content titled window
+/// Window setup: a clear, full-size-content titled window
 /// whose native traffic lights are pinned inside the rounded corner.
 
 enum WindowChrome {

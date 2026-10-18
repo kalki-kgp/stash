@@ -205,3 +205,7 @@ Scripts/make-dmg.sh        # dist/Stash-<version>.dmg
 ## Credits
 
 Keyboard shortcuts follow [Maccy](https://github.com/p0deje/Maccy).
+
+## License
+
+Stash is source-available, not open source. You can read the code, fork it, change it and build it for your own use. You can't redistribute it, as source or as an app, changed or not. See [LICENSE](LICENSE) for the full terms.

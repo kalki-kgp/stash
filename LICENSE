@@ -1,0 +1,53 @@
+Stash License
+
+Copyright (c) 2026 Krishna Kamalakar Paikine. All rights reserved.
+
+Stash is source-available, not open source. This license lets you use and change Stash for
+yourself. It does not let you share it.
+
+1. Permitted use
+
+   You may, at no charge:
+   (a) view and study the source code;
+   (b) fork this repository on GitHub, and clone it to your own computers;
+   (c) modify the source code; and
+   (d) build and run Stash, modified or not, on computers you own or control, for your own
+       personal or internal use.
+
+2. No redistribution
+
+   You may not, in whole or in part, modified or not:
+   (a) distribute, publish, share, sell, rent, lease or sublicense the source code or any
+       build of it (including app bundles, disk images, installers and binaries), whether
+       for free or for a fee;
+   (b) host or offer it for others to download, including through other repositories, app
+       stores, package managers or websites; or
+   (c) release a product derived from it, or a substantial part of it, under any name.
+
+   A fork on GitHub is permitted only as a place to keep your own changes and to propose
+   changes to this repository. It may not be used to offer builds or releases to others.
+
+3. Contributions
+
+   If you submit a change to this repository (for example, as a pull request), you agree
+   that the copyright holder may use, modify and distribute that change as part of Stash
+   under any terms, and you confirm that you have the right to grant this.
+
+4. Maccy and other inspirations
+
+   Some keyboard shortcuts were influenced by or share names with Maccy.
+
+5. Termination
+
+   If you break these terms, your permission ends at once, and you must delete the copies
+   you made, including your builds.
+
+6. No warranty
+
+   STASH IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+   BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE
+   AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH STASH OR THE USE OR OTHER DEALINGS IN IT.
+
+Any rights not expressly granted here are reserved by the copyright holder.
