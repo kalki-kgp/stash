@@ -280,6 +280,12 @@ struct OnboardingView: View {
             } }
 
             HStack {
+                // Setup is about getting Stash working; the coffee link waits for Settings.
+                if !isFirstRun {
+                    ChromeTextButton(symbol: "cup.and.saucer.fill", title: "Buy me a Coffee", help: "Support Stash on Ko-fi") {
+                        NSWorkspace.shared.open(URL(string: "https://ko-fi.com/kalkikgp")!)
+                    }
+                }
                 Spacer()
                 ChromeTextButton(symbol: "checkmark", title: "Done", help: "Close setup", action: done)
             }
